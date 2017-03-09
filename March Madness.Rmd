@@ -1,0 +1,101 @@
+---
+title: "March Madness"
+author: "Tyler Wellener"
+date: "2/21/2017"
+output: html_document
+---
++  IMPORTING LIBRARIES
+```{r}
+suppressMessages(library(data.table))
+suppressMessages(library(dplyr))
+suppressMessages(library(reshape))
+```
+
++  IMPORTING DATA
+```{r}
+regSeasonCompactResults = read.csv("RegularSeasonCompactResults.csv", header = TRUE, stringsAsFactors = FALSE)
+regSeasonDetailedResults = read.csv("RegularSeasonDetailedResults.csv", header = TRUE, stringsAsFactors = FALSE)
+seasons = read.csv("Seasons.csv", header = TRUE, stringsAsFactors = FALSE)
+teams = read.csv("Teams.csv", header = TRUE, stringsAsFactors = FALSE)
+tourneyCompactResults = read.csv("TourneyCompactResults.csv", header = TRUE, stringsAsFactors = FALSE)
+tourneyDetailedResults = read.csv("TourneyDetailedResults.csv", header = TRUE, stringsAsFactors = FALSE)
+tourneySeeds = read.csv("TourneySeeds.csv", header = TRUE, stringsAsFactors = FALSE)
+tourneySlots = read.csv("TourneySlots.csv", header = TRUE, stringsAsFactors = FALSE)
+sampleSubmission = read.csv("sample_submission.csv", header = TRUE, stringsAsFactors = FALSE)
+```
+
++  PREVIEW DATA
+```{r}
+head(regSeasonCompactResults)
+head(regSeasonDetailedResults)
+head(seasons)
+head(teams)
+head(tourneyCompactResults)
+head(tourneyDetailedResults)
+head(tourneySeeds)
+head(tourneySlots)
+head(sampleSubmission)
+```
+
++  EXTRACTING SEEDS FOR EACH TEAM
++  REMOVING REGION USING gsub
+```{r, eval=FALSE}
+TourneySeeds = tourneySeeds %>% 
+    mutate(SeedNum = gsub("[A-Z+a-z]", "", Seed)) %>% select(Season, Team, SeedNum)
+head(TourneySeeds)
+```
+
++  DELETING `Pred` FROM `Sample Submission`
+```{r, eval=FALSE}
+SampleSubmission = SampleSubmission[-2]
+```
+
++  CREATING COLUMN VARIABLES USING `id`
+```{r, eval=FALSE}
+games.to.predict = cbind(SampleSubmission$id, colsplit(SampleSubmission$id, split = "_", names = c('season', 'team1', 'team2')))   
+```
+
++  JOINING GAMES WITH TEAM SEEDS
+```{r, eval=FALSE}
+temp = left_join(games.to.predict, TourneySeeds, by=c("season" = "Season", "team1" = "Team"))
+games.to.predict = left_join(temp, TourneySeeds, by=c("season" = "Season", "team2" = "Team"))
+colnames(games.to.predict)[c(1,5:6)] = c("id", "team1seed", "team2seed")
+games.to.predict = games.to.predict %>% mutate(team1seed = as.numeric(team1seed), team2seed = as.numeric(team2seed))
+head(games.to.predict)
+```
+
++  JOINING COMPACT RESULTS WITH TEAM SEEDS
+```{r, eval=FALSE}
+temp = left_join(as.data.frame(tourneyCompactResults), tourneySeeds, by=c("Season", "Wteam" = "Team"))
+compact.results = left_join(temp, tourneySeeds, by=c("Season", "Lteam" = "Team"))
+head(compact.results)
+```
+
++  REMOVING LETTERS USING gsub()
+```{r, eval=FALSE}
+compact.results$Seed.x = gsub("[A-Z+a-z]", "", compact.results$Seed.x)
+compact.results$Seed.y = gsub("[A-Z+a-z]", "", compact.results$Seed.y)
+```
+
++  WIN FOR ONE TEAM ... LOSS FOR THE OTHER
+```{r, eval=FALSE}
+set1 = compact.results %>% select(Seed.x, Seed.y) %>% mutate(result=1)
+set2 = compact.results %>% select(Seed.y, Seed.x) %>% mutate(result=0)
+colnames(set1) = c("team1seed", "team2seed", "team1win")
+colnames(set2) = c("team1seed", "team2seed", "team1win")
+full.set = rbind(set1, set2)
+full.set = full.set %>% mutate(team1seed = as.numeric(team1seed), team2seed = as.numeric(team2seed))
+```
+
++  BUILDING SIMPLE LINEAR MODEL BASED ON DIFFERENCE IN TEAM SEEDS
+```{r, eval=FALSE}
+m.seed.diff <- lm(team1win~ I(team2seed-team1seed), data=full.set)
+summary(m.seed.diff)
+```
+
++  MAKING PREDICTION USING TEAM SEEDS MODEL
+```{r, eval=FALSE}
+games.to.predict$Pred <- predict(m.seed.diff, games.to.predict)
+write.csv(games.to.predict %>% select(id, Pred), 'seed_submission.csv', row.names=FALSE)
+```
+
