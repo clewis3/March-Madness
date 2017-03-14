@@ -1,17 +1,28 @@
 ---
-title: "March Madness"
-author: "Tyler Wellener"
-date: "2/21/2017"
+title: "March Madness v3"
+author: "Chris Lewis and Tyler Wellener"
+date: "3/13/2017"
 output: html_document
 ---
-+  IMPORTING LIBRARIES
+
+####  Libraries
 ```{r}
-suppressMessages(library(data.table))
-suppressMessages(library(dplyr))
+suppressWarnings(suppressMessages(library(varhandle)))
+suppressWarnings(suppressMessages(library(stringr)))
+suppressWarnings(suppressMessages(library(data.table)))
+suppressWarnings(suppressMessages(library(dplyr)))
 suppressMessages(library(reshape))
+suppressMessages(library(rpart))
+suppressWarnings(library(randomForest))
+suppressWarnings(library(hybridEnsemble))
+suppressWarnings(library(caret))
+suppressMessages(library(caretEnsemble))
+suppressMessages(library(mlbench))
 ```
 
-+  IMPORTING DATA
+
+
+####  Dataset
 ```{r}
 regSeasonCompactResults = read.csv("RegularSeasonCompactResults.csv", header = TRUE, stringsAsFactors = FALSE)
 regSeasonDetailedResults = read.csv("RegularSeasonDetailedResults.csv", header = TRUE, stringsAsFactors = FALSE)
@@ -24,78 +35,402 @@ tourneySlots = read.csv("TourneySlots.csv", header = TRUE, stringsAsFactors = FA
 sampleSubmission = read.csv("sample_submission.csv", header = TRUE, stringsAsFactors = FALSE)
 ```
 
-+  PREVIEW DATA
-```{r}
-head(regSeasonCompactResults)
-head(regSeasonDetailedResults)
-head(seasons)
-head(teams)
-head(tourneyCompactResults)
+
+
+#### Preview Data
+```{r, eval=TRUE}
+#head(regSeasonCompactResults)
+#head(regSeasonDetailedResults)
+#min(regSeasonDetailedResults$Season)
+#min(regSeasonCompactResults$Season)
+#head(seasons)
+#head(teams)
+#head(tourneyCompactResults)
 head(tourneyDetailedResults)
-head(tourneySeeds)
-head(tourneySlots)
-head(sampleSubmission)
+#head(tourneySeeds)
+#head(tourneySlots)
+#head(sampleSubmission)
 ```
 
-+  EXTRACTING SEEDS FOR EACH TEAM
-+  REMOVING REGION USING gsub
-```{r, eval=FALSE}
-TourneySeeds = tourneySeeds %>% 
-    mutate(SeedNum = gsub("[A-Z+a-z]", "", Seed)) %>% select(Season, Team, SeedNum)
-head(TourneySeeds)
+
+
+#### Creating Submission File & First Submission
+```{r}
+submissionFile = function(season) {
+    playoffTeams = sort(tourneySeeds$Team[which(tourneySeeds$Season == season)])
+    numTeams = length(playoffTeams)
+    matrix = matrix(nrow = numTeams, ncol = numTeams)
+    for (i in c(1:numTeams)) {
+        for (j in c(1:numTeams)) {
+            matrix[i, j] <- paste(season, "_", playoffTeams[i], "_", playoffTeams[j], 
+                sep = "")
+        }
+    }
+    keep = upper.tri(matrix, diag = F)
+    idcol = vector()
+    for (i in c(1:numTeams)) {
+        for (j in c(1:numTeams)) {
+            if (keep[i, j] == T) {
+                idcol <- c(idcol, matrix[i, j])
+            }
+        }
+    }
+    form = data.frame(Matchup = idcol, Win = NA)
+    return(form)
+}
+sub_file = data.frame()
+sub_file
+
+
+# Last 4-5 seasons
+for (i in 2013:2016) {
+    sub_file <- rbind(sub_file, submissionFile(i))
+}
+
+# 50% prediction for every game (easy 1st model)
+colnames(sub_file) <- c("id", "pred")
+sub_file$pred <- 0.5
+write.csv(sub_file, file = "sub1.csv", row.names = FALSE)
 ```
 
-+  DELETING `Pred` FROM `Sample Submission`
-```{r, eval=FALSE}
-SampleSubmission = SampleSubmission[-2]
+
+
+#### Historical Data
+```{r, eval=TRUE}
+team_metrics_by_season <- function(seasonNumber) {
+    playoff_teams <- sort(tourneySeeds$Team[which(tourneySeeds$Season == seasonNumber)])
+    playoff_seeds <- tourneySeeds[which(tourneySeeds$Season == seasonNumber), ]
+    season <- regSeasonDetailedResults[which(regSeasonDetailedResults$Season == seasonNumber), ]
+
+    ##Each of these dataframes is labled "Var1" and "Freq" for TeamID and Statistic respectively
+    #Wins (NOT A USABLEVAR, must scale)
+    win_freq_table <- as.data.frame(table(season$Wteam))
+    wins_by_team <- win_freq_table[win_freq_table$Var1 %in% playoff_teams, ]
+    #Losses (NOT A USABLEVAR, must scale)
+    loss_freq_table <- as.data.frame(table(season$Lteam), stringsAsFactors = FALSE)
+    loss_by_team <- loss_freq_table[loss_freq_table$Var1 %in% playoff_teams, ]
+    #Total Win Percentage
+    gamesplayed <- as.vector(wins_by_team$Freq + loss_by_team$Freq)
+    total_winpct <- round(wins_by_team$Freq / gamesplayed, digits = 3)
+    total_winpct_by_team <- as.data.frame(cbind(as.vector(loss_by_team$Var1), total_winpct))
+    total_winpct_by_team = unfactor(total_winpct_by_team)
+    colnames(total_winpct_by_team) <- c("Var1", "Freq")
+    #Num of wins in last 10 games
+    wins_last_10_games_by_team <- data.frame()
+    for(i in playoff_teams) {
+        games <- season[which(season$Wteam == i | season$Lteam == i), ]
+        numwins <- sum(tail(games$Wteam, n = 10) == i)
+        put <- c(i, numwins)
+        wins_last_10_games_by_team <- rbind(wins_last_10_games_by_team, put)
+    }
+    colnames(wins_last_10_games_by_team) <- c("Var1", "Freq")
+    #Seed
+    pattern <- "[A-Z]([0-9][0-9])"
+    team_seeds <- as.data.frame(str_match(playoff_seeds$Seed, pattern))
+    seeds <- as.numeric(team_seeds$V2)
+    playoff_seeds$Seed  <- seeds
+    seed_col <- vector()
+    for(i in playoff_teams) {
+        val <- match(i, playoff_seeds$Team)
+        seed_col <- c(seed_col, playoff_seeds$Seed[val])
+    }
+    team_seed <- data.frame("Var1" = playoff_teams, "Freq" =seed_col)
+    # Effective Field Goal % , Possessions
+    eFG_by_team <- data.frame()
+    poss_by_team = data.frame()
+    off_eff_by_team = data.frame()
+    def_eff_by_team = data.frame()
+    to_by_team = data.frame()
+    ftr_by_team = data.frame()
+    off_reb_pct_by_team = data.frame()
+    for (i in playoff_teams){ 
+      Wgames = season[which(season$Wteam == i), ]
+      A_or = sum(Wgames$Wor)
+      B_dr = sum(Wgames$Ldr)
+      WFGA = sum(Wgames$Wfga)
+      WFGM = sum(Wgames$Wfgm)
+      W_3pointers = sum(Wgames$Wfgm3)
+      Wor = sum(Wgames$Wor)
+      Wto = sum(Wgames$Wto)
+      Wfta = sum(Wgames$Fta)
+      w_score = sum(Wgames$Wscore)
+      opp_score = sum(Wgames$lscore)
+      Lgames = season[which(season$Lteam == i), ]
+      A_or2 = sum(A_or + Lgames$Lor)
+      B_dr2 = sum(B_dr + Lgames$Wdr)
+      LFGA = sum(Lgames$Lfga)
+      LFGM = sum(Lgames$Lfgm)
+      L_3pointers = sum(Lgames$Lfgm3)
+      Lor = sum(Lgames$Lor)
+      Lto = sum(Lgames$Lto)
+      Lfta = sum(Lgames$Lfta)
+      l_score = sum(Lgames$Lscore)
+      opp_score2 = sum(Lgames$Wscore)
+      Off_Reb = sum(Wor + Lor)
+      turnovers = sum(Wto + Lto)
+      fta = sum(Wfta + Lfta)
+      fga = sum(WFGA + LFGA)
+      
+      Points_Scored = w_score + l_score      
+      Points_Allowed = opp_score + opp_score2
+      eFG = sum(sum(WFGM + LFGM) + (0.5 * sum(W_3pointers + L_3pointers))) / (WFGA + LFGA)
+      poss = (0.96 * (fga - Off_Reb - turnovers + (0.475 * fta)))
+      off_eff = ((Points_Scored * 100) / poss)
+      def_eff = ((Points_Allowed * 100) / poss)
+      turnover_pct = turnovers / poss
+      ftr = fta / fga
+      Off_Reb_Pct = A_or2 / (A_or2 + B_dr2)
+
+
+      
+      put1 <- c(eFG)
+      put2 = c(poss)
+      put3 = c(off_eff)
+      put4 = c(turnover_pct)
+      put5 = c(ftr)
+      put6 = c(Off_Reb_Pct)
+      put7 = c(def_eff)
+      
+      eFG_by_team = rbind(eFG_by_team, put1)
+      poss_by_team = rbind(poss_by_team, put2)
+      off_eff_by_team = rbind(off_eff_by_team, put3)
+      def_eff_by_team = rbind(def_eff_by_team, put7)
+      to_by_team = rbind(to_by_team, put4)
+      ftr_by_team = rbind(ftr_by_team, put5)
+      off_reb_pct_by_team = rbind(off_reb_pct_by_team, put6)
+      }
+    team_metrics <- data.frame()
+    team_metrics <- cbind(total_winpct_by_team, wins_last_10_games_by_team$Freq,
+    team_seed$Freq, eFG_by_team, poss_by_team, off_eff_by_team, def_eff_by_team, to_by_team, ftr_by_team, 
+    off_reb_pct_by_team)
+    colnames(team_metrics) <- c("TEAMID", "A_TWPCT", "A_WST10", "A_SEED", "A_eFG", "A_Poss", "A_Off_Eff", "A_Def_Eff",
+                                "A_TO_Pct", "A_FTR", "A_Off_Reb_Pct")
+    return(team_metrics)
+}
 ```
 
-+  CREATING COLUMN VARIABLES USING `id`
-```{r, eval=FALSE}
-games.to.predict = cbind(SampleSubmission$id, colsplit(SampleSubmission$id, split = "_", names = c('season', 'team1', 'team2')))   
+
+
+#### Sample Data
+```{r, eval=TRUE}
+sample_model <- function(seasonNumber) {
+    teamMetrics <- team_metrics_by_season(seasonNumber)
+    season_matches <- tourneyDetailedResults[which(tourneyDetailedResults$Season == seasonNumber), ]
+    team <- vector()
+    result <- vector()
+    for(i in c(1:nrow(season_matches))) {
+        row <- season_matches[i, ]
+        if(row$Wteam < row$Lteam) {
+            vector <- paste(seasonNumber,"_",row$Wteam,"_", row$Lteam, sep ="")
+            team <- c(team, vector)
+            result <- c(result, 1)
+        } else {
+            oth <- paste(seasonNumber, "_", row$Lteam, "_", row$Wteam, sep ="")
+            team <- c(team, oth)
+            result <- c(result, 0)
+        }
+    }
+    model_data_frame <- data.frame("Matchup" = team, "Win" = result)
+    teamMetrics_away <- teamMetrics
+    colnames(teamMetrics_away) <- c("TEAMID", "B_TWPCT","B_WST10", "B_SEED", "B_eFG", "B_Poss", "B_Off_Eff", "B_Def_Eff", "B_TO_PCT", "B_FTR", "B_Off_Reb_Pct")
+    pattern <- "[0-9]{4}_([0-9]{4})_([0-9]{4})"
+    teamIDs <- as.data.frame(str_match(model_data_frame$Matchup, pattern))
+    teamIDs <- teamIDs[ , c(2,3)]
+    colnames(teamIDs) <- c("HomeID", "AwayID")
+    model_data_frame <- cbind(model_data_frame, teamIDs)
+    home_frame <- data.frame()
+    for(i in model_data_frame$HomeID) {
+        home_frame <- rbind(home_frame, teamMetrics[match(i, teamMetrics$TEAMID), ])
+    }
+    #Removing teamID column
+    home_frame <- home_frame[ , -1]
+    
+    away_frame <- data.frame()
+    for(i in model_data_frame$AwayID) {
+        away_frame <- rbind(away_frame, teamMetrics_away[match(i, teamMetrics_away$TEAMID), ])
+    }
+    away_frame <- away_frame[ , -1]
+    
+    model_data_frame <- cbind(model_data_frame, home_frame, away_frame)
+    
+    return(model_data_frame)
+}
+
+
+#sample_2003 = sample_frame_model(2003)
+#sample_2004 = sample_frame_model(2004)
+#sample_2005 = sample_frame_model(2005)
+#sample_2006 = sample_model(2006)
+#sample_2007 = sample_model(2007)
+#sample_2008 = sample_model(2008)
+#sample_2009 = sample_model(2009)
+sample_2010 = sample_model(2010)
+sample_2011 = sample_model(2011)
+sample_2012 = sample_model(2012)
+sample_2013 = sample_model(2013)
+sample_2014 = sample_model(2014)
+sample_2015 = sample_model(2015)
+sample_2016 = sample_model(2016)
+
+# Sample Master Data Set 2010 - 2016: Tournament Results w/ Regular Season Stats
+full_sample_data = rbind(sample_2010, sample_2011, sample_2012, sample_2013, 
+                        sample_2014, sample_2015, sample_2016)
+
+full_sample_data = na.omit(full_sample_data)
+full_sample_data
+
+predictor_data = rbind(sample_2013, sample_2014, sample_2015, sample_2016)
+predictor_data$Win <- ifelse(predictor_data$Win==1,'win','loss')
+predictor_data$Win <- as.factor(predictor_data$Win)
+predictor_data
 ```
 
-+  JOINING GAMES WITH TEAM SEEDS
-```{r, eval=FALSE}
-temp = left_join(games.to.predict, TourneySeeds, by=c("season" = "Season", "team1" = "Team"))
-games.to.predict = left_join(temp, TourneySeeds, by=c("season" = "Season", "team2" = "Team"))
-colnames(games.to.predict)[c(1,5:6)] = c("id", "team1seed", "team2seed")
-games.to.predict = games.to.predict %>% mutate(team1seed = as.numeric(team1seed), team2seed = as.numeric(team2seed))
-head(games.to.predict)
+#### Test Data
+```{r}
+all_matchups <- function(season) {
+    model_data_frame <- submissionFile(season)
+    teamMetrics <- team_metrics_by_season(season)
+    teamMetrics_away <- teamMetrics
+    colnames(teamMetrics_away) <- c("TEAMID", "B_TWPCT","B_WST10", "B_SEED", "B_eFG", "B_Poss", "B_Off_Eff", "B_Def_Eff", "B_TO_PCT", "B_FTR", "B_Off_Reb_Pct")
+    pattern <- "[0-9]{4}_([0-9]{4})_([0-9]{4})"
+    teamIDs <- as.data.frame(str_match(model_data_frame$Matchup, pattern))
+    teamIDs <- teamIDs[ , c(2,3)]
+    colnames(teamIDs) <- c("HomeID", "AwayID")
+    model_data_frame <- cbind(model_data_frame, teamIDs)
+    home_frame <- data.frame()
+    for(i in model_data_frame$HomeID) {
+        home_frame <- rbind(home_frame, teamMetrics[match(i, teamMetrics$TEAMID), ])
+    }
+    #Removing teamID column
+    home_frame <- home_frame[ , -1]
+    
+    away_frame <- data.frame()
+    for(i in model_data_frame$AwayID) {
+        away_frame <- rbind(away_frame, teamMetrics_away[match(i, teamMetrics_away$TEAMID), ])
+    }
+    away_frame <- away_frame[ , -1]
+    
+    model_data_frame <- cbind(model_data_frame, home_frame, away_frame)
+    
+    return(model_data_frame)
+}
+nrow(all_matchups(2013))
+nrow(all_matchups(2014))
+nrow(all_matchups(2015))
+nrow(all_matchups(2016))
+
 ```
 
-+  JOINING COMPACT RESULTS WITH TEAM SEEDS
+
+#### Applying Tree Classification Model
 ```{r, eval=FALSE}
-temp = left_join(as.data.frame(tourneyCompactResults), tourneySeeds, by=c("Season", "Wteam" = "Team"))
-compact.results = left_join(temp, tourneySeeds, by=c("Season", "Lteam" = "Team"))
-head(compact.results)
+sample_rpart = rpart(Win ~ A_WST10 + A_SEED + B_WST10 + B_SEED, data = full_sample_data, 
+    method = "class")
+
+testData <- data.frame()
+for (i in 2013:2016) {
+    testData <- rbind(testData, all_matchups(i))
+}
 ```
 
-+  REMOVING LETTERS USING gsub()
+#### 2nd Model Prediction
 ```{r, eval=FALSE}
-compact.results$Seed.x = gsub("[A-Z+a-z]", "", compact.results$Seed.x)
-compact.results$Seed.y = gsub("[A-Z+a-z]", "", compact.results$Seed.y)
+predictions_rpart <- predict(sample_rpart, newdata = testData, type = "prob")
+predictions <- predictions_rpart[, 1]
+subfile <- data.frame(id = testData$Matchup, pred = predictions)
+write.csv(subfile, file = "tree_model.csv", row.names = FALSE)
 ```
 
-+  WIN FOR ONE TEAM ... LOSS FOR THE OTHER
-```{r, eval=FALSE}
-set1 = compact.results %>% select(Seed.x, Seed.y) %>% mutate(result=1)
-set2 = compact.results %>% select(Seed.y, Seed.x) %>% mutate(result=0)
-colnames(set1) = c("team1seed", "team2seed", "team1win")
-colnames(set2) = c("team1seed", "team2seed", "team1win")
-full.set = rbind(set1, set2)
-full.set = full.set %>% mutate(team1seed = as.numeric(team1seed), team2seed = as.numeric(team2seed))
+
+```{r}
+full_sample_data
+dim(full_sample_data)
+
+
+predictors = data.frame(full_sample_data[-c(1,3,4)])
+predictors$Win <- ifelse(predictors$Win==1,'win','loss')
+predictors$Win <- as.factor(predictors$Win)
+predictors
+
+
+set.seed(100)
+sample_data = sample(nrow(predictors), nrow(predictors)*2/3)
+sample_data
+
+
+train_data = predictors[sample_data, ]
+train_data
+
+
+test_data = predictors[-sample_data, ]
+test_data
+
+
+
+rf_model = randomForest(Win ~., train_data, ntree = 500, mtry=4, keep.forest = TRUE)
+rf_model
+
+
+predict_model = predict(rf_model, test_data)
+predict_model
+
+
+table(test_data[,1], predict_model)
+mean(test_data[,1] == predict_model)
+
+
+#optimal_mtry = tuneRF(train_data, train_data$Win, ntreeTry = 500, stepFactor = 1.2, improve = .01, trace = T, plot = T)
+#optimal_mtry
+
+
+
+
+importance(rf_model, type = 1)
+varImpPlot(rf_model)
+
+
+#set.seed(100)
+#control = trainControl(method = "repeatedcv", number=10, repeats=3)
+#metric = "Accuracy"
+#fit.rf = train(Win~., data=predictors, method = "rf", metric=metric, trControl=control )
+#fit.rf
+#
+#makeprediction = predict(fit.rf, predictor_data)
+#makeprediction
+
+
+
+
+
+#predict_show=predict(rf_model, newdata=data.frame(Sepal.Length=5,Sepal.Width=3,Petal.Length=1.5,Petal.Width=.2), type='prob')
+#predict_show
+
+#predictions = data.frame()
+#for (i in 2013:2016) {
+#  predictions = rbind(predictions, all_matchups(i)) 
+#}
+#predictions 
+#predictions_rf = predict(rf_model, newdata = predictions, type = "prob")
+#predictions2 = predictions_rf[,1]
+#subfile = data.frame(id = predictions2$Matchup, pred = predictions2)
+#write.csv(subfile, file = "rf_model.csv", row.names = FALSE)
+
+sample_rpart = rpart(Win ~ A_WST10 + A_SEED + B_WST10 + B_SEED, data = full_sample_data, 
+method = "class")
+
+testData <- data.frame()
+for (i in c(2013,2016)) {
+  testData <- rbind(testData, all_matchups(i))
+}
+testData
+
+predictions_rf <- predict(rf_model, newdata = testData, type = "prob")
+predictions <- predictions_rf[, 1]
+subfile <- data.frame(id = testData$Matchup, pred = 1-predictions)
+write.csv(subfile, file = "tree_model.csv", row.names = FALSE)
+
+
 ```
 
-+  BUILDING SIMPLE LINEAR MODEL BASED ON DIFFERENCE IN TEAM SEEDS
-```{r, eval=FALSE}
-m.seed.diff <- lm(team1win~ I(team2seed-team1seed), data=full.set)
-summary(m.seed.diff)
-```
 
-+  MAKING PREDICTION USING TEAM SEEDS MODEL
-```{r, eval=FALSE}
-games.to.predict$Pred <- predict(m.seed.diff, games.to.predict)
-write.csv(games.to.predict %>% select(id, Pred), 'seed_submission.csv', row.names=FALSE)
-```
 

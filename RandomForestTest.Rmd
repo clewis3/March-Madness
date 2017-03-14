@@ -1,0 +1,108 @@
+---
+title: "Random Forest Test"
+author: "Chris Lewis"
+date: "3/9/2017"
+output: html_document
+---
+
+```{r}
+library(randomForest)
+library(hybridEnsemble)
+library(caret)
+library(caretEnsemble)
+library(mlbench)
+
+
+iris
+dim(iris)
+
+iris_data = data.frame(iris[-5])
+iris_data
+
+
+set.seed(100)
+sample_data = sample(150, 100)
+
+train_data = iris[sample_data, ]
+train_data
+
+test_data = iris[-sample_data, ]
+
+rf_model = randomForest(Species ~., train_data, mtry = 2, ntree = 500)
+rf_model
+
+
+
+
+predict_model = predict(rf_model, test_data)
+predict_model
+
+predict_show=predict(rf_model, newdata=data.frame(Sepal.Length=5,Sepal.Width=3,Petal.Length=1.5,Petal.Width=.2), type='prob')
+
+predict_show
+
+
+table(test_data[,5], predict_model)
+
+mean(test_data[,5] == predict_model)
+
+importance(rf_model, type = 1)
+varImpPlot(rf_model)
+
+best_mtry = tuneRF(train_data, train_data$Species, ntreeTry = 500, stepFactor = 1.2, improve = .01, trace = T, plot = T)
+best_mtry
+
+```
+###########################
+
+
+set.seed(100)
+control = trainControl(method = "repeatedcv", number=10, repeats=3)
+stackControl = trainControl(method="repeatedcv", number=10, repeats=3, savePredictions = TRUE, classProbs = TRUE)
+metric = "Accuracy"
+fit.rf = train(Species~., data=iris, method = "rf", metric=metric, trControl=control )
+fit.rf
+
+
+algorithmList = c('lda', 'rpart', 'knn', 'svmRadial')
+models = caretList(Species~., data=iris, trControl = stackControl, methodList = algorithmList)
+stack.rf = caretStack(models, method="rf", metric="Accuracy", trControl=stackControl)
+print(stack.rf)
+
+
+
+
+unique(iris$Species)
+iris$Species = ifelse(iris$Species == "setosa", 0)
+iris$Species = ifelse(iris$Species == "veriscolor", 0.5)
+iris$Species = ifelse(iris$Species == "virginica" , 1)
+
+
+
+
+hybEns = hybridEnsemble(x=iris,y= iris$Species)
+
+
+
+```{r}
+library(randomForest)
+library(hybridEnsemble)
+library(caret)
+library(RCurl)
+
+
+iris
+
+
+
+```
+
+
+
+
+
+
+
+
+
+

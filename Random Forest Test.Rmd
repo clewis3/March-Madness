@@ -1,0 +1,48 @@
+---
+title: "Random Forest Test"
+author: "Chris Lewis"
+date: "3/9/2017"
+output: html_document
+---
+
+```{r}
+library(randomForest)
+
+iris
+dim(iris)
+
+
+
+
+set.seed(100)
+sample_data = sample(150, 100)
+
+train_data = iris[sample_data, ]
+train_data
+
+test_data = iris[-sample_data, ]
+
+rf_model = randomForest(Species ~., train_data, mtry = 3, ntree = 500)
+rf_model
+
+importance(rf_model, type = 1)
+
+
+predict_model = predict(rf_model, test_data)
+predict_model
+
+
+#table(test_data[,5], predict_model)
+
+#mean(test_data[,5] == predict_model)
+
+#varImpPlot(rf_model)
+
+#best_mtry = tuneRF(train_data, train_data$Species, ntreeTry = 500, stepFactor = 1.2, improve = .01, trace = T, plot = T)
+#best_mtry
+
+```
+
+
+
+
