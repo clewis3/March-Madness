@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ####  Libraries
-```{r}
+```{r,}
 suppressWarnings(suppressMessages(library(devtools)))
 suppressWarnings(suppressMessages(library(varhandle)))
 suppressWarnings(suppressMessages(library(stringr)))
@@ -20,6 +20,8 @@ suppressWarnings(suppressWarnings(library(caret)))
 suppressWarnings(suppressMessages(library(caretEnsemble)))
 suppressWarnings(suppressMessages(library(mlbench)))
 suppressWarnings(suppressMessages(library(pROC)))
+suppressWarnings(suppressMessages(library(RCurl)))
+suppressWarnings(suppressMessages(library(prodlim)))
 ```
 
 
@@ -88,17 +90,12 @@ sub_file
 for (i in 2013:2016) {
     sub_file <- rbind(sub_file, submissionFile(i))
 }
-
-# 50% prediction for every game (easy 1st model)
-colnames(sub_file) <- c("id", "pred")
-sub_file$pred <- 0.5
-write.csv(sub_file, file = "sub1.csv", row.names = FALSE)
 ```
 
 
 
 #### Historical Data
-```{r, eval=TRUE}
+```{r, cache=TRUE}
 team_metrics_by_season <- function(seasonNumber) {
     playoff_teams <- sort(tourneySeeds$Team[which(tourneySeeds$Season == seasonNumber)])
     playoff_seeds <- tourneySeeds[which(tourneySeeds$Season == seasonNumber), ]
@@ -285,7 +282,7 @@ full_sample_data = na.omit(full_sample_data)
 predictor_data = rbind(sample_2013, sample_2014, sample_2015, sample_2016)
 predictor_data$Win <- ifelse(predictor_data$Win==1,'win','loss')
 predictor_data$Win <- as.factor(predictor_data$Win)
-predictor_data
+#predictor_data
 ```
 
 #### Test Data
@@ -408,11 +405,14 @@ for (i in c(2017)) {
 #testData
 
 predictions_rf <- predict(rf_model, newdata = testData, type = "prob")
+predictions_rf
 predictions <- predictions_rf[, 1]
 subfile <- data.frame(id = testData$Matchup, pred = 1-predictions)
 write.csv(subfile, file = "randomForests.csv", row.names = FALSE)
 
+```
 
+```{r}
 ########################### CV WITH RANDOM FOREST ###########################
 
 
@@ -445,82 +445,198 @@ predictions_cvrf <- predict(modelFit, newdata = testData1, type = "prob")
 predictions <- predictions_cvrf[, 1]
 subfile1 <- data.frame(id = testData1$Matchup, pred = 1-predictions)
 write.csv(subfile1, file = "CVrandomForests.csv", row.names = FALSE)
+```
 
+```{r}
 
 ########################### ENSEMBLE ###########################
+predictors = data.frame(full_sample_data[-c(1,3,4)])
+predictors <- data.frame(lapply(predictors, as.character), stringsAsFactors=FALSE)
+predictors <- data.frame(lapply(predictors, as.numeric))
 
-#predictors = data.frame(full_sample_data[-c(1,3,4)])
-#predictors
 
-epredictors <- data.frame(full_sample_data[-c(1,3,4)])
-epredictors <- data.frame(lapply(epredictors, as.character), stringsAsFactors=FALSE)
-epredictors <- data.frame(lapply(epredictors, as.numeric))
+
+
+
+predictorsfactor <- data.frame(full_sample_data[-c(1,3,4)])
+predictorsfactor$Win = ifelse(predictors$Win==1,'win','loss')
+predictorsfactor$Win = as.factor(predictors$Win)
 
 
 set.seed(1234)
-epredictors <- epredictors[sample(nrow(epredictors)),]
-split <- floor(nrow(epredictors)/3)
-ensembleData <- epredictors[0:split,]
-blenderData <- epredictors[(split+1):(split*2),]
-testingData <- epredictors[(split*2+1):nrow(epredictors),]
+predictors <- predictors[sample(nrow(predictors)),]
+split <- floor(nrow(predictors)/3)
+
+ensembleData <- predictors[0:split,]
+blenderData <- predictors[(split+1):(split*2),]
+testingData <- predictors[(split*2+1):nrow(predictors),]
+
+ensemblefactorData <- predictorsfactor[0:split,]
+blenderfactorData <- predictorsfactor[(split+1):(split*2),]
+testingfactorData <- predictorsfactor[(split*2+1):nrow(predictorsfactor),]
 
 # set label name and predictors
 labelName <- 'Win'
+realpredictors <- names(ensembleData)[names(ensembleData) != labelName]
+realpredictorsfactor = names(ensemblefactorData)[names(ensemblefactorData) != labelName]
 
-realpredictors <- data.frame(epredictors[-1])
-realpredictors
-
+library(caret)
 
 
 # create a caret control object to control the number of cross-validations performed
 myControl <- trainControl(method='cv', number=10, repeats=3, returnResamp='none')
 
 # quick benchmark model 
-test_model <- train(blenderData[,realpredictors], blenderData[,labelName], method='gbm', trControl=myControl)
+
+test_model <- caret::train(blenderData[,realpredictors], blenderData[,labelName], method='gbm', trControl=myControl)
 preds <- predict(object=test_model, testingData[,realpredictors])
+head(ensembleData)
+```
 
 
+```{r}
+library(caret)
+library(pROC)
+library(prodlim)
 auc <- roc(testingData[,labelName], preds)
 print(auc$auc)
+```
 
+```{r}
+# THIS IS WHERE IT FUCKS UP
+library(prodlim)
+library(klaR)
 # train all the ensemble models with ensembleData
-model_gbm <- train(ensembleData[,realpredictors], ensembleData[,labelName], method='gbm', trControl=myControl)
-model_rf <- train(ensembleData[,realpredictors], ensembleData[,labelName], method='rf', trControl=myControl)
-model_mlp <- train(ensembleData[,realpredictors], ensembleData[,labelName], method='mlp', trControl=myControl)
+model_gbm <- caret::train(ensembleData[,realpredictors], ensemblefactorData[,labelName], method='gbm', trControl=myControl)
+model_rf <- caret::train(ensembleData[,realpredictors], ensemblefactorData[,labelName], method='rf', trControl=myControl)
+model_rf
+model_treebag <- caret::train(ensembleData[,realpredictors], ensembleData[,labelName], method='treebag', trControl=myControl)
+model_treebag
+model_mlp <- caret::train(ensembleData[,realpredictors], ensembleData[,labelName], method='mlp', trControl=myControl)
+model_mlp
 
+```
+
+```{r, eval=FALSE}
 # get predictions for each ensemble model for two last data sets
 # and add them back to themselves
+library(varhandle)
+blenderData$gbm_PROB <- blenderData$gbm_PROB
 blenderData$gbm_PROB <- predict(object=model_gbm, blenderData[,realpredictors])
 blenderData$rf_PROB <- predict(object=model_rf, blenderData[,realpredictors])
+blenderData$treebag_PROB <- predict(object=model_treebag, blenderData[,realpredictors])
 blenderData$mlp_PROB <- predict(object=model_mlp, blenderData[,realpredictors])
+blenderData$mlp_PROB <- as.numeric(blenderData$mlp_PROB)
+
+
 testingData$gbm_PROB <- predict(object=model_gbm, testingData[,realpredictors])
 testingData$rf_PROB <- predict(object=model_rf, testingData[,realpredictors])
+testingData$treebag_PROB <- predict(object=model_treebag, testingData[,realpredictors])
 testingData$mlp_PROB <- predict(object=model_mlp, testingData[,realpredictors])
 
+```
+
+```{r}
 # see how each individual model performed on its own
-auc <- roc(testingData[,labelName], testingData$gbm_PROB )
+blenderData$gbm_PROB <- as.numeric(as.character(blenderData$gbm_PROB))
+testingData$gbm_PROB <- as.numeric(as.character(testingData$gbm_PROB))
+
+
+auc <- pROC::roc(testingData[,labelName], testingData$gbm_PROB)
 print(auc$auc) 
 
-auc <- roc(testingData[,labelName], testingData$rf_PROB )
+blenderData$rf_PROB = as.numeric(as.character(blenderData$rf_PROB))
+testingData$rf_PROB = as.numeric(as.character(testingData$rf_PROB))
+auc <- roc(testingData[,labelName], testingData$rf_PROB)
 print(auc$auc) 
 
+blenderData$mlp_PROB = as.numeric(as.character(blenderData$mlp_PROB))
+testingData$mlp_PROB = as.numeric(as.character(blenderData$mlp_PROB))
 auc <- roc(testingData[,labelName], testingData$mlp_PROB )
 print(auc$auc) 
 
 # run a final model to blend all the probabilities together
 realpredictors <- names(blenderData)[names(blenderData) != labelName]
-final_blender_model <- train(blenderData[,realpredictors], blenderData[,labelName], method='gbm', trControl=myControl)
+final_blender_model <- caret::train(blenderData[,realpredictors], blenderData[,labelName], method='gbm', trControl=myControl)
+final_blender_model
 
 # See final prediction and AUC of blended ensemble
 preds <- predict(object=final_blender_model, testingData[,realpredictors])
+preds
 auc <- roc(testingData[,labelName], preds)
 print(auc$auc)  
 
 
+#library(caretEnsemble)
+#control <- trainControl(method="repeatedcv", number=10, repeats=3, savePredictions=TRUE, classProbs=TRUE)
+#algorithmList <- c('rf', 'gbm', 'svmRadial')
+#set.seed(100)
+#models <- caretList(Win~., data=predictors, trControl=control, methodList=algorithmList)
+#results <- resamples(models)
+#summary(results)
+
+library(mlbench)
+library(randomForest)
+library(caret)
+library(caretEnsemble)
+library(gbm)
+
+model_list <- caretList(
+  Win~., data=trainingSet,
+  trControl=my_control,
+  methodList=c("glm", "rf", "svmRadial")
+  )
+
+greedy_ensemble <- caretEnsemble(
+  model_list, 
+  metric="ROC",
+  trControl=trainControl(
+    number=2,
+    summaryFunction=twoClassSummary,
+    classProbs=TRUE
+    ))
+
+library(caTools)
+model_preds <- lapply(model_list, predict, newdata=testingSet, type="prob")
+model_preds <- data.frame(model_preds)
+ens_preds <- predict(greedy_ensemble, newdata=testingSet, type="prob")
+model_preds$ensemble <- ens_preds
+caTools::colAUC(model_preds, testingSet$Win)
+
+model_list <- caretList(
+  Win~., data=trainingSet,
+  trControl=my_control,
+  methodList=c("glm", "rf")
+  )
+
+gbm_ensemble <- caretStack(
+  model_list,
+  method="gbm",
+  verbose=FALSE,
+  tuneLength=10,
+  metric="ROC",
+  trControl=trainControl(
+    method="boot",
+    number=10,
+    savePredictions="final",
+    classProbs=TRUE,
+    summaryFunction=twoClassSummary
+  )
+)
+model_preds3 <- model_preds
+model_preds3$ensemble <- predict(gbm_ensemble, newdata=testingSet, type="prob")
+colAUC(model_preds3, testingSet$Win)
 
 
+testData3 <- data.frame()
+for (i in c(2017)) {
+  testData3 <- rbind(testData3, all_matchups(i))
+}
+#testData
 
-
+model_preds3 <- predict(gbm_ensemble, newdata=testData3, type="prob")
+subfile3 <- data.frame(id = testData3$Matchup, pred = model_preds3)
+write.csv(subfile3, file = "ensemble.csv", row.names = FALSE)
 ```
 
 ```{r}
@@ -540,18 +656,28 @@ devtools::install_github('zachmayer/kaggleNCAA')
 
 
 
-set.seed(100)
-library('kaggleNCAA')
-data(subfile)
-f <- tempfile()
-write.csv(subfile1, f, row.names=F)
-dat <- parseBracket(f)
-unlink(f)
-sim <- simTourney(dat, 5000, year=2017, progress=TRUE)
-bracket <- extractBracket(sim)
-printableBracket(bracket)
+#set.seed(100)
+#library('kaggleNCAA')
+#data(subfile)
+#f <- tempfile()
+#write.csv(subfile1, f, row.names=F)
+#dat <- parseBracket(f)
+#unlink(f)
+#sim <- simTourney(dat, 5000, year=2017, progress=TRUE)
+#bracket <- extractBracket(sim)
+#printableBracket(bracket)
 
 
+#set.seed(100)
+#library('kaggleNCAA')
+##data(subfile)
+#f <- tempfile()
+#write.csv(subfile3, f, row.names=F)
+#dat <- parseBracket(f)
+#unlink(f)
+#sim <- simTourney(dat, 1000, year=2017, progress=TRUE)
+#bracket <- extractBracket(sim)
+#printableBracket(bracket)
 
 ```
 
